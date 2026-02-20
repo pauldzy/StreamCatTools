@@ -9,8 +9,8 @@ sc_get_data2 <- function(
 
   # Base API URL.
   if (is.null(endpoint)) {
-    base_url <- 'https://ordspub.epa.gov';
-    base_end <- '/ords/waters_web/streamcat.streamcat_metrics2.metrics';
+    base_url <- 'https://api.epa.gov';
+    base_end <- '/StreamCat/streams2/metrics';
     request  <- 
       httr2::request(base_url) |>
       httr2::req_url_path(base_end);
