@@ -2,6 +2,9 @@ sc_get_data25 <- function(
    request_body = NULL
   ,chunker      = NULL
   ,endpoint     = NULL
+  ,tmpfile      = NULL
+  ,checkparms   = TRUE
+  ,verbose      = TRUE
 ) {
 
   # Base API URL.
@@ -17,6 +20,17 @@ sc_get_data25 <- function(
     
   }
   
+  if (isTRUE(verbose)) {
+    message(paste(". querying",httr2::req_get_url(request)));
+  }
+  
+  if (is.null(tmpfile)) {
+    tmpfile = tempfile();
+  }
+  if (isTRUE(verbose)) {
+    message(paste(". staging results at",tmpfile));
+  }
+
   # Force old and odd naming convention to behave correctly
   if ("aoi" %in% names(request_body)) {
     request_body[["aoi"]] <- unlist(lapply(request_body[["aoi"]],function(x) {
@@ -51,6 +65,12 @@ sc_get_data25 <- function(
       message("suppressing chunker value when after is provided in request body");
     }
     
+  } else {
+    if (isTRUE(verbose)) {
+      message(paste(". chunk value of",request));
+      
+    }
+    
   }
 
   if ("name" %in% names(request_body) && request_body[["name"]][1] == "all") {
@@ -64,32 +84,47 @@ sc_get_data25 <- function(
 
   }
 
-  params <- sc_get_params(param='metric_names');
-  if ("name" %in% names(request_body) && request_body[["name"]][1] != "all") {
-    if (!all(request_body[["name"]] %in% params)){
-      message("One or more of the provided metric names do not match the expected metric names in StreamCat.  Use sc_get_params(param='metric_names') to list valid metric names for StreamCat");
+  if (isTRUE(checkparms)) {
+    params <- sc_get_params(param='metric_names');
+    
+    if ("name" %in% names(request_body) && request_body[["name"]][1] != "all") {
+      if (!all(request_body[["name"]] %in% params)){
+        message("One or more of the provided metric names do not match the expected metric names in StreamCat.  Use sc_get_params(param='metric_names') to list valid metric names for StreamCat");
 
+      }
+      
     }
 
   }
   
-  rb2prm <- function(rb,key) {
-    if (key %in% names(rb) {
-      if (is.null(rb%key)) {
-        return NULL;
+  rb2prm <- function(rb,key,scalar = FALSE) {
+    if (key %in% names(rb)) {
+      if (is.null(rb[[key]])) {
+        return(NULL);
       
       } else {
-        return rb%key;
+        if (isTRUE(scalar)) {
+          return(rb[[key]][1]);
+        
+        } else {
+          return(paste(rb[[key]],collapse = ","));
+        }
         
       }
       
     } else {
-      return NULL;
+      return(NULL);
       
     } 
   
   }
+  
+  # be careful using static tempfile names if multiple requests are made similtaneously
+  if (file.exists(tmpfile)) {
+    file.remove(tmpfile)
+  }
 
+  # when chunker is null, do a straightforward CSV extraction into a data frame
   if (is.null(chunker)) {
     req <-
       request |>
@@ -98,30 +133,46 @@ sc_get_data25 <- function(
           comid        = rb2prm(request_body,'comid')
          ,name         = rb2prm(request_body,'name')
          ,aoi          = rb2prm(request_body,'aoi')
-         ,conus        = rb2prm(request_body,'conus')
-         ,countonly    = rb2prm(request_body,'countonly')
+         ,conus        = rb2prm(request_body,'conus',TRUE)
+         ,countonly    = rb2prm(request_body,'countonly',TRUE)
          ,region       = rb2prm(request_body,'region')
          ,state        = rb2prm(request_body,'state')
          ,county       = rb2prm(request_body,'county')
-         ,showpctfull  = rb2prm(request_body,'showpctfull')
-         ,showareasqkm = rb2prm(request_body,'showareasqkm')
-         ,showshape    = rb2prm(request_body,'showshape')
-         ,offset       = rb2prm(request_body,'offset')
-         ,limit        = rb2prm(request_body,'limit')
-         ,after        = rb2prm(request_body,'after')
-         ,debug        = rb2prm(request_body,'debug')
-      );
- 
-    req |> httr2::req_dry_run();
-    quit(0);
-    
-    resp <- httr2::req_perform(req);
+         ,showpctfull  = rb2prm(request_body,'showpctfull',TRUE)
+         ,showareasqkm = rb2prm(request_body,'showareasqkm',TRUE)
+         ,showshape    = rb2prm(request_body,'showshape',TRUE)
+         ,csv_header   = TRUE
+         ,csv_last     = FALSE
+         ,offset       = rb2prm(request_body,'offset',TRUE)
+         ,limit        = rb2prm(request_body,'limit',TRUE)
+         ,after        = rb2prm(request_body,'after',TRUE)
+         ,debug        = rb2prm(request_body,'debug',TRUE)
+      ) |>
+      httr2::req_headers(Accept = "text/csv");
 
-    resp_list <-
-      resp |>
-      httr2::resp_body_json(simplifyVector = TRUE);
+    resp <- tryCatch(
+       httr2::req_perform(req)
+      ,httr2_http_502 = function(cnd) {
+        message(". got 502, waiting to try again");
+        Sys.sleep(10);
+        req |> httr2::req_perform(req)
+       }
+      ,httr2_http_503 = function(cnd) {
+        message(". got 503, waiting to try again");
+        Sys.sleep(30);
+        req |> httr2::req_perform(req)
+       }
+      ,httr2_http_504 = function(cnd) {
+        message(". got 504, waiting to try again");
+        Sys.sleep(15);
+        req |> httr2::req_perform(req)
+       }
+    );
+      
+    resp_str <- httr2::resp_body_string(resp);
+    writeLines(resp_str,tmpfile); 
     
-    df <- as.data.frame(resp_list[["results"]]);
+    df <- read.csv(tmpfile);
 
     if (exists("df") && !is.null(df)) {
       if ("count" %in% colnames(df)) {
@@ -134,21 +185,18 @@ sc_get_data25 <- function(
       }
 
     }
-    stop("unable to convert service response into valid data frame");
+    stop(paste("unable to convert service response into valid data frame from ",tmpfile));
     
+  # when chunker is provided, set limit to chunker size and capture last value of request using csv_after flag
   } else {
-    rowcnt <- NULL;
-    aft    <- 0;
-    df     <- NULL;
+    hdr <- TRUE;
+    aft <- 0;
     
-    while (is.null(rowcnt) || rowcnt > 0) {
+    # Open output csv for append
+    con <- file(tmpfile,"a"); 
+    
+    while (!is.null(aft) && aft != '') {
       message(paste(". requesting",chunker,"comids")); 
-      
-      rb <- c(
-         request_body
-        ,limit = chunker
-        ,after = aft
-      );
       
       req <-
         request |>
@@ -158,11 +206,34 @@ sc_get_data25 <- function(
           ,retry_on_failure = TRUE
         ) |>
         httr2::req_timeout(seconds = 60) |> 
-        httr2::req_body_json(rb) |>
-        httr2::req_verbose();
+        httr2::req_body_form(
+          comid        = rb2prm(request_body,'comid')
+         ,name         = rb2prm(request_body,'name')
+         ,aoi          = rb2prm(request_body,'aoi')
+         ,conus        = rb2prm(request_body,'conus',TRUE)
+         ,countonly    = rb2prm(request_body,'countonly',TRUE)
+         ,region       = rb2prm(request_body,'region')
+         ,state        = rb2prm(request_body,'state')
+         ,county       = rb2prm(request_body,'county')
+         ,showpctfull  = rb2prm(request_body,'showpctfull',TRUE)
+         ,showareasqkm = rb2prm(request_body,'showareasqkm',TRUE)
+         ,showshape    = rb2prm(request_body,'showshape',TRUE)
+         ,csv_header   = hdr
+         ,csv_last     = TRUE
+         ,offset       = rb2prm(request_body,'offset',TRUE)
+         ,limit        = chunker
+         ,after        = aft
+         ,debug        = rb2prm(request_body,'debug',TRUE)
+      ) |>
+      httr2::req_headers(Accept = "text/csv");
+      
+      if (isTRUE(verbose)) {
+        req |> httr2::req_dry_run();
+        
+      }
       
       resp <- tryCatch(
-         httr2::req_perform(req)
+         httr2::req_perform_connection(req)
         ,httr2_http_502 = function(cnd) {
           message(". got 502, waiting to try again");
           Sys.sleep(10);
@@ -179,59 +250,56 @@ sc_get_data25 <- function(
           req |> httr2::req_perform(req)
          }
       );
-
-      resp_list <-
-        resp |>
-        httr2::resp_body_json(simplifyVector = TRUE);
       
-      if (is.null(df)) {
-        df <- as.data.frame(resp_list[["results"]]);
+      while (!httr2::resp_stream_is_complete(resp)) {
+        line <- httr2::resp_stream_lines(resp);
         
-        if (exists("df") && !is.null(df)) {
-          if ("count" %in% colnames(df)) {
-            return(df$items);
-
+        if (substring(line,1,2) == '//') {
+          if (substring(line,1,7) == '//last=') {
+            # When a request returns no further records, aft will be NULL and exit the loop
+            aft <- substring(line,8);
+            
           }
           
-        }
-        
-        colcnt = length(df);
-        rowcnt = nrow(df);
-        if (rowcnt == 0) {
-          df %>% dplyr::select(comid,dplyr::everything());
-          return(df);
-          
-        }
-        
-        message(paste(". got",rowcnt,"records of",colcnt,"columns at last comid",aft));
-      
-      } else {
-        tmp <- as.data.frame(resp_list[["results"]]);
-        
-        colcnt = length(tmp);
-        rowcnt = nrow(tmp);
-        message(paste(". got",rowcnt,"records of",colcnt,"columns at last comid",aft));
-        
-        if (rowcnt == 0) {
-          df %>% dplyr::select(comid,dplyr::everything());
-          return(df);
-        
         } else {
-          df <- rbind(
-             df
-            ,tmp
-          );
-          
+          writeLines(line,con=con,sep="");
+        
         }
       
       }
       
-      aft <- resp_list[["last"]]; 
-       
+      # Make sure to close as R only provides 128 connections
+      close(resp);
+      
+      # Remove header from further iterations
+      hdr <- FALSE;
+      
+    }
+
+    close(con);
+    
+    # Loading results back into memory under R may or may not be a bit dodgy
+    if (isTRUE(verbose)) {
+      message(". loading results into data frame");
+    }
+    df <- read.csv(tmpfile);
+
+    if (isTRUE(verbose)) {
+      message(". passing back dataframe");
+    }
+    if (exists("df") && !is.null(df)) {
+      if ("count" %in% colnames(df)) {
+        return(df$items);
+
+      } else {
+        df %>% dplyr::select(comid,dplyr::everything());
+        return(df);
+
+      }
+
     }
   
   }
 
 }
-
 NULL;
