@@ -2,7 +2,7 @@ sc_get_data2 <- function(
    request_body = NULL
   ,chunker      = NULL
   ,endpoint     = NULL
-  ,tmpfile      = NULL
+  ,csvfile      = NULL
   ,checkparms   = TRUE
   ,verbose      = FALSE
   ,showrequest  = FALSE
@@ -25,11 +25,11 @@ sc_get_data2 <- function(
     message(paste(". querying",httr2::req_get_url(request)));
   }
   
-  if (is.null(tmpfile)) {
-    tmpfile = paste0(tempfile(),'.csv');
+  if (is.null(csvfile)) {
+    csvfile = paste0(tempfile(),'.csv');
   }
   if (isTRUE(verbose)) {
-    message(paste(". staging results at",tmpfile));
+    message(paste(". staging results at",csvfile));
   }
 
   # Force old and odd naming convention to behave correctly
@@ -121,13 +121,14 @@ sc_get_data2 <- function(
   }
   
   # be careful using static tempfile names if multiple requests are made similtaneously
-  if (file.exists(tmpfile)) {
-    file.remove(tmpfile)
+  if (file.exists(csvfile)) {
+    file.remove(csvfile)
   }
   # Open output csv for append
-  con <- file(tmpfile,"a");
+  con <- file(csvfile,"a");
 
-  colnames <- NULL;  
+  colnames <- NULL;
+  rowcount <- 0;
   
   # when chunker is null, do a straightforward CSV extraction into a data frame
   if (is.null(chunker)) {
@@ -194,9 +195,11 @@ sc_get_data2 <- function(
       } else {
         if (is.null(colnames)) {
           colnames <- line;
+        } else {
+          rowcount <- rowcount + 1;
         }
         
-        writeLines(line,con=con,sep="");
+        writeLines(line,con=con);
       
       }
     
@@ -281,9 +284,11 @@ sc_get_data2 <- function(
         } else {
           if (is.null(colnames)) {
             colnames <- line;
+          } else {
+            rowcount <- rowcount + 1;
           }
           
-          writeLines(line,con=con,sep="");
+          writeLines(line,con=con);
         
         }
       
@@ -297,22 +302,23 @@ sc_get_data2 <- function(
       
     }
     
-    cols = read.csv(text = colnames,header = FALSE);
+    cols = utils::read.csv(text = colnames,header = FALSE);
     if (isTRUE(verbose)) {
       message(paste(". results have",length(cols),"columns"));
     }
      
     if (isTRUE(verbose)) {
-      message(". loading results into data frame");
+      message(paste(". loading",rowcount,"total results into data frame"));
     }
     
     # This assumes all StreamCat results are numeric doubles
-    df <- fread(
-       tmpfile
+    df <- data.table::fread(
+       csvfile
       ,colClasses = list(
          integer64 = c(1)
         ,numeric   = c(2,length(cols))
-       )      
+       )
+      ,fill = TRUE       
     );
 
     if (isTRUE(verbose)) {

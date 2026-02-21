@@ -11,11 +11,11 @@ sc_get_params2 <- function(param = NULL) {
       params <- strsplit(stringr::str_sub(resp$aoi_param_info[[1]]$options,2,-2),",")[[1]]
       params <- c(gsub(" ","", params),'other')
       params <- params[order(params)]
+      
     }  else if(param == 'metric_names') {
       params <- resp$name_options[[1]][[1]]
       params <- params[!duplicated(params)]
       params <- params[order(params)]
-      message(params)
       
     } else if(param == 'variable_info') {
       params <- httr2::request('https://api.epa.gov/StreamCat/streams2/variable_info') |>
@@ -28,6 +28,7 @@ sc_get_params2 <- function(param = NULL) {
                       short_description=WEBTOOL_NAME,units=METRIC_UNITS,
                       long_description=METRIC_DESCRIPTION, dsid=DSID,
                       source_name=SOURCE_NAME, source_URL=SOURCE_URL)
+                      
     } else if(param == 'categories'){
       params <- httr2::request('https://api.epa.gov/StreamCat/streams2/variable_info') |>
         httr2::req_perform() |>
@@ -35,6 +36,7 @@ sc_get_params2 <- function(param = NULL) {
         readr::read_csv(show_col_types = FALSE) |>
         dplyr::select(INDICATOR_CATEGORY)
       params <- sort(unique(params$INDICATOR_CATEGORY))
+      
     } else if(param == 'datasets'){
       params <- httr2::request('https://api.epa.gov/StreamCat/streams2/variable_info') |>
         httr2::req_perform() |>
@@ -42,20 +44,24 @@ sc_get_params2 <- function(param = NULL) {
         readr::read_csv(show_col_types = FALSE) |>
         dplyr::select(DSNAME)
       params <- sort(unique(params$DSNAME[!is.na(params$DSNAME)]))
+      
     } else if(param == 'region'){
       params <- resp$region_options[[1]][[1]]
       params <- params[order(params)]
+      
     } else if(param == 'state'){
       params <- resp$state_options[[1]]
       params <- params[!params$st_abbr %in% c('AK','HI','PR'),]
       params$st_fips <- as.character(params$st_fips)
       params$st_fips[nchar(params$st_fips) < 2] <- paste0('0',params$st_fips[nchar(params$st_fips) < 2])
       params <- params[order(params$st_name),]
+      
     } else if(param == 'county'){
       params <- resp$county_options[[1]]
       params$fips <- as.character(params$fips)
       params$fips[nchar(params$fips) < 5] <- paste0('0',params$fips[nchar(params$fips) < 5])
       params <- params[with(params,order(state,county_name)),]
+      
     }
   },error = function(e) {
     message("An error occurred during req_perform(); the service may be down or function parameters may be mis-specified: ", e$message)
