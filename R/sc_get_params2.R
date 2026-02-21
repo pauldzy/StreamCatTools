@@ -15,6 +15,8 @@ sc_get_params2 <- function(param = NULL) {
       params <- resp$name_options[[1]][[1]]
       params <- params[!duplicated(params)]
       params <- params[order(params)]
+      message(params)
+      
     } else if(param == 'variable_info') {
       params <- httr2::request('https://api.epa.gov/StreamCat/streams2/variable_info') |>
         httr2::req_perform() |>

@@ -4,7 +4,8 @@ sc_get_data2 <- function(
   ,endpoint     = NULL
   ,tmpfile      = NULL
   ,checkparms   = TRUE
-  ,verbose      = TRUE
+  ,verbose      = FALSE
+  ,showrequest  = FALSE
 ) {
 
   # Base API URL.
@@ -25,7 +26,7 @@ sc_get_data2 <- function(
   }
   
   if (is.null(tmpfile)) {
-    tmpfile = tempfile();
+    tmpfile = paste0(tempfile(),'.csv');
   }
   if (isTRUE(verbose)) {
     message(paste(". staging results at",tmpfile));
@@ -123,12 +124,21 @@ sc_get_data2 <- function(
   if (file.exists(tmpfile)) {
     file.remove(tmpfile)
   }
+  # Open output csv for append
+  con <- file(tmpfile,"a");
 
+  colnames <- NULL;  
+  
   # when chunker is null, do a straightforward CSV extraction into a data frame
   if (is.null(chunker)) {
     req <-
       request |>
-      httr2::req_retry(backoff = ~ 5, max_tries = 6) |>
+      httr2::req_timeout(seconds = 180) |>
+      httr2::req_retry(
+         backoff          = ~ 15
+        ,max_tries        = 10
+        ,retry_on_failure = TRUE
+      ) |>
       httr2::req_body_form(
           comid        = rb2prm(request_body,'comid')
          ,name         = rb2prm(request_body,'name')
@@ -149,9 +159,14 @@ sc_get_data2 <- function(
          ,debug        = rb2prm(request_body,'debug',TRUE)
       ) |>
       httr2::req_headers(Accept = "text/csv");
+      
+    if (isTRUE(showrequest)) {
+      req |> httr2::req_dry_run();
+      
+    }
 
     resp <- tryCatch(
-       httr2::req_perform(req)
+       httr2::req_perform_connection(req)
       ,httr2_http_502 = function(cnd) {
         message(". got 502, waiting to try again");
         Sys.sleep(10);
@@ -168,44 +183,46 @@ sc_get_data2 <- function(
         req |> httr2::req_perform(req)
        }
     );
-      
-    resp_str <- httr2::resp_body_string(resp);
-    writeLines(resp_str,tmpfile); 
     
-    df <- read.csv(tmpfile);
-
-    if (exists("df") && !is.null(df)) {
-      if ("count" %in% colnames(df)) {
-        return(df$items);
-
+    while (!httr2::resp_stream_is_complete(resp)) {
+      line <- httr2::resp_stream_lines(resp);
+      
+      if (substring(line,1,2) == '//') {
+        # filter away any possible metadata
+        {}
+        
       } else {
-        df %>% dplyr::select(comid,dplyr::everything());
-        return(df);
-
+        if (is.null(colnames)) {
+          colnames <- line;
+        }
+        
+        writeLines(line,con=con,sep="");
+      
       }
-
+    
     }
-    stop(paste("unable to convert service response into valid data frame from ",tmpfile));
+    
+    # Make sure to close as R only provides 128 connections
+    close(resp);
     
   # when chunker is provided, set limit to chunker size and capture last value of request using csv_after flag
   } else {
     hdr <- TRUE;
     aft <- 0;
     
-    # Open output csv for append
-    con <- file(tmpfile,"a"); 
-    
     while (!is.null(aft) && aft != '') {
-      message(paste(". requesting",chunker,"comids")); 
+      if (isTRUE(verbose)) {
+        message(paste(". requesting",chunker,"comids with after value",aft)); 
+      }
       
       req <-
         request |>
+        httr2::req_timeout(seconds = 180) |> 
         httr2::req_retry(
-           backoff = ~ 15
-          ,max_tries = 6
+           backoff          = ~ 15
+          ,max_tries        = 10
           ,retry_on_failure = TRUE
         ) |>
-        httr2::req_timeout(seconds = 60) |> 
         httr2::req_body_form(
           comid        = rb2prm(request_body,'comid')
          ,name         = rb2prm(request_body,'name')
@@ -227,7 +244,7 @@ sc_get_data2 <- function(
       ) |>
       httr2::req_headers(Accept = "text/csv");
       
-      if (isTRUE(verbose)) {
+      if (isTRUE(showrequest)) {
         req |> httr2::req_dry_run();
         
       }
@@ -262,6 +279,10 @@ sc_get_data2 <- function(
           }
           
         } else {
+          if (is.null(colnames)) {
+            colnames <- line;
+          }
+          
           writeLines(line,con=con,sep="");
         
         }
@@ -275,14 +296,24 @@ sc_get_data2 <- function(
       hdr <- FALSE;
       
     }
-
-    close(con);
     
-    # Loading results back into memory under R may or may not be a bit dodgy
+    cols = read.csv(text = colnames,header = FALSE);
+    if (isTRUE(verbose)) {
+      message(paste(". results have",length(cols),"columns"));
+    }
+     
     if (isTRUE(verbose)) {
       message(". loading results into data frame");
     }
-    df <- read.csv(tmpfile);
+    
+    # This assumes all StreamCat results are numeric doubles
+    df <- fread(
+       tmpfile
+      ,colClasses = list(
+         integer64 = c(1)
+        ,numeric   = c(2,length(cols))
+       )      
+    );
 
     if (isTRUE(verbose)) {
       message(". passing back dataframe");
@@ -292,7 +323,6 @@ sc_get_data2 <- function(
         return(df$items);
 
       } else {
-        df %>% dplyr::select(comid,dplyr::everything());
         return(df);
 
       }
@@ -300,6 +330,9 @@ sc_get_data2 <- function(
     }
   
   }
+  
+  # Close the CSV file
+  close(con);
 
 }
 NULL;
