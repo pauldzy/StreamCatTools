@@ -217,10 +217,14 @@ sc_get_data2 <- function(
     # Make sure to close as R only provides 128 connections
     close(resp);
     
+    if (isTRUE(verbose)) {
+      message(paste(". running count:",rowcount)); 
+    }
+    
   # when chunker is provided, set limit to chunker size and capture last value of request using csv_after flag
   } else {
     hdr <- TRUE;
-    aft <- 0;
+    aft <- -99999999;
     
     while (!is.null(aft) && aft != '') {
       if (isTRUE(verbose)) {
@@ -305,6 +309,10 @@ sc_get_data2 <- function(
       
       # Make sure to close as R only provides 128 connections
       close(resp);
+      
+      if (isTRUE(verbose)) {
+        message(paste(". running count:",rowcount)); 
+      }
       
       # Remove header from further iterations
       hdr <- FALSE;
