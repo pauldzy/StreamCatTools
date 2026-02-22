@@ -312,6 +312,9 @@ sc_get_data2 <- function(
     }
     
   }
+  
+  # Close the CSV file
+  close(con);
     
   cols = utils::read.csv(text = colnames,header = FALSE);
   if (isTRUE(verbose)) {
@@ -323,16 +326,13 @@ sc_get_data2 <- function(
   }
   
   # This assumes all StreamCat results are numeric doubles
-  df <- suppressWarnings(data.table::fread(
+  df <- data.table::fread(
      csvfile
     ,colClasses = list(
        integer64 = c(1)
       ,numeric   = c(2:length(cols))
-     )  
-  ));
-  # Note the author of data.table does not believe that CSV files should have trailing linefeeds.
-  # Having a final linefeed causes both erroneous and panicky warning messages, all whilst still properly processing the CSV file.
-  # The suppressWarnings wrapper here is meant to lower confusion, at the cost of perhaps missing some other important warning.
+     )
+  );
 
   if (isTRUE(verbose)) {
     message(". passing back dataframe");
@@ -347,9 +347,6 @@ sc_get_data2 <- function(
     }
   
   }
-  
-  # Close the CSV file
-  close(con);
 
 }
 NULL;
