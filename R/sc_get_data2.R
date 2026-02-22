@@ -66,9 +66,14 @@ sc_get_data2 <- function(
       message("suppressing chunker value when after is provided in request body");
     }
     
+    if (isTRUE(verbose) && !is.null(chunker)) {
+      message(paste(". chunk value of",chunker));
+      
+    }
+    
   } else {
     if (isTRUE(verbose)) {
-      message(paste(". chunk value of",request));
+      message(". no chunking for this request");
       
     }
     
@@ -132,6 +137,10 @@ sc_get_data2 <- function(
   
   # when chunker is null, do a straightforward CSV extraction into a data frame
   if (is.null(chunker)) {
+    if (isTRUE(verbose)) {
+      message(". executing single request"); 
+    }
+      
     req <-
       request |>
       httr2::req_timeout(seconds = 180) |>
@@ -289,7 +298,7 @@ sc_get_data2 <- function(
           }
           
           writeLines(line,con=con);
-        
+          
         }
       
       }
@@ -302,36 +311,38 @@ sc_get_data2 <- function(
       
     }
     
-    cols = utils::read.csv(text = colnames,header = FALSE);
-    if (isTRUE(verbose)) {
-      message(paste(". results have",length(cols),"columns"));
-    }
-     
-    if (isTRUE(verbose)) {
-      message(paste(". loading",rowcount,"total results into data frame"));
-    }
+  }
     
-    # This assumes all StreamCat results are numeric doubles
-    df <- data.table::fread(
-       csvfile
-      ,colClasses = list(
-         integer64 = c(1)
-        ,numeric   = c(2,length(cols))
-       )
-      ,fill = TRUE       
-    );
+  cols = utils::read.csv(text = colnames,header = FALSE);
+  if (isTRUE(verbose)) {
+    message(paste(". results have",length(cols),"columns"));
+  }
+   
+  if (isTRUE(verbose)) {
+    message(paste(". loading",rowcount,"total results into data frame"));
+  }
+  
+  # This assumes all StreamCat results are numeric doubles
+  df <- suppressWarnings(data.table::fread(
+     csvfile
+    ,colClasses = list(
+       integer64 = c(1)
+      ,numeric   = c(2:length(cols))
+     )  
+  ));
+  # Note the author of data.table does not believe that CSV files should have trailing linefeeds.
+  # Having a final linefeed causes both erroneous and panicky warning messages, all whilst still properly processing the CSV file.
+  # The suppressWarnings wrapper here is meant to lower confusion, at the cost of perhaps missing some other important warning.
 
-    if (isTRUE(verbose)) {
-      message(". passing back dataframe");
-    }
-    if (exists("df") && !is.null(df)) {
-      if ("count" %in% colnames(df)) {
-        return(df$items);
+  if (isTRUE(verbose)) {
+    message(". passing back dataframe");
+  }
+  if (exists("df") && !is.null(df)) {
+    if ("count" %in% colnames(df)) {
+      return(df$items);
 
-      } else {
-        return(df);
-
-      }
+    } else {
+      return(df);
 
     }
   
