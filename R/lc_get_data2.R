@@ -1,16 +1,17 @@
-sc_get_data25 <- function(
+lc_get_data2 <- function(
    request_body = NULL
   ,chunker      = NULL
   ,endpoint     = NULL
-  ,tmpfile      = NULL
+  ,csvfile      = NULL
   ,checkparms   = TRUE
-  ,verbose      = TRUE
+  ,verbose      = FALSE
+  ,showrequest  = FALSE
 ) {
 
   # Base API URL.
   if (is.null(endpoint)) {
-    base_url <- 'https://ordspub.epa.gov';
-    base_end <- '/ords/waters_web/streamcat.streamcat_metrics2.metrics';
+    base_url <- 'https://api.epa.gov';
+    base_end <- '/StreamCat/lakes2/metrics';
     request  <- 
       httr2::request(base_url) |>
       httr2::req_url_path(base_end);
@@ -24,11 +25,11 @@ sc_get_data25 <- function(
     message(paste(". querying",httr2::req_get_url(request)));
   }
   
-  if (is.null(tmpfile)) {
-    tmpfile = tempfile();
+  if (is.null(csvfile)) {
+    csvfile = paste0(tempfile(),'.csv');
   }
   if (isTRUE(verbose)) {
-    message(paste(". staging results at",tmpfile));
+    message(paste(". staging results at",csvfile));
   }
 
   # Force old and odd naming convention to behave correctly
@@ -39,12 +40,6 @@ sc_get_data25 <- function(
       }
       if (tolower(x) == "watershed") {
         x <- "ws";
-      }
-      if (tolower(x) == "riparian_catchment") {
-        x <- "catrp100";
-      }
-      if (tolower(x) == "riparian_watershed") {
-        x <- "wsrp100";
       }
       return(x);
     }));
@@ -65,9 +60,14 @@ sc_get_data25 <- function(
       message("suppressing chunker value when after is provided in request body");
     }
     
+    if (isTRUE(verbose) && !is.null(chunker)) {
+      message(paste(". chunk value of",chunker));
+      
+    }
+    
   } else {
     if (isTRUE(verbose)) {
-      message(paste(". chunk value of",request));
+      message(". no chunking for this request");
       
     }
     
@@ -85,11 +85,11 @@ sc_get_data25 <- function(
   }
 
   if (isTRUE(checkparms)) {
-    params <- sc_get_params(param='metric_names');
+    params <- lc_get_params2(param='metric_names');
     
     if ("name" %in% names(request_body) && request_body[["name"]][1] != "all") {
       if (!all(request_body[["name"]] %in% params)){
-        message("One or more of the provided metric names do not match the expected metric names in StreamCat.  Use sc_get_params(param='metric_names') to list valid metric names for StreamCat");
+        message("One or more of the provided metric names do not match the expected metric names in StreamCat.  Use lc_get_params(param='metric_names') to list valid metric names for StreamCat");
 
       }
       
@@ -119,16 +119,30 @@ sc_get_data25 <- function(
   
   }
   
-  # be careful using static tempfile names if multiple requests are made similtaneously
-  if (file.exists(tmpfile)) {
-    file.remove(tmpfile)
+  # be careful using static csvfile names if multiple requests are made simultaneously
+  if (file.exists(csvfile)) {
+    file.remove(csvfile)
   }
+  # Open output csv for append
+  con <- file(csvfile,"a");
 
-  # when chunker is null, do a straightforward CSV extraction into a data frame
+  colnames <- NULL;
+  rowcount <- 0;
+  
+  # when chunker is null, do a straightforward CSV download
   if (is.null(chunker)) {
+    if (isTRUE(verbose)) {
+      message(". executing single request"); 
+    }
+      
     req <-
       request |>
-      httr2::req_retry(backoff = ~ 5, max_tries = 6) |>
+      httr2::req_timeout(seconds = 180) |>
+      httr2::req_retry(
+         backoff          = ~ 15
+        ,max_tries        = 10
+        ,retry_on_failure = TRUE
+      ) |>
       httr2::req_body_form(
           comid        = rb2prm(request_body,'comid')
          ,name         = rb2prm(request_body,'name')
@@ -149,9 +163,14 @@ sc_get_data25 <- function(
          ,debug        = rb2prm(request_body,'debug',TRUE)
       ) |>
       httr2::req_headers(Accept = "text/csv");
+      
+    if (isTRUE(showrequest)) {
+      req |> httr2::req_dry_run();
+      
+    }
 
     resp <- tryCatch(
-       httr2::req_perform(req)
+       httr2::req_perform_connection(req)
       ,httr2_http_502 = function(cnd) {
         message(". got 502, waiting to try again");
         Sys.sleep(10);
@@ -168,44 +187,52 @@ sc_get_data25 <- function(
         req |> httr2::req_perform(req)
        }
     );
-      
-    resp_str <- httr2::resp_body_string(resp);
-    writeLines(resp_str,tmpfile); 
     
-    df <- read.csv(tmpfile);
-
-    if (exists("df") && !is.null(df)) {
-      if ("count" %in% colnames(df)) {
-        return(df$items);
-
+    while (!httr2::resp_stream_is_complete(resp)) {
+      line <- httr2::resp_stream_lines(resp);
+      
+      if (substring(line,1,2) == '//') {
+        # filter away any possible metadata
+        {}
+        
       } else {
-        df %>% dplyr::select(comid,dplyr::everything());
-        return(df);
-
+        if (is.null(colnames)) {
+          colnames <- line;
+        } else {
+          rowcount <- rowcount + 1;
+        }
+        
+        writeLines(line,con=con);
+      
       }
-
+    
     }
-    stop(paste("unable to convert service response into valid data frame from ",tmpfile));
+    
+    # Make sure to close as R only provides 128 connections
+    close(resp);
+    
+    if (isTRUE(verbose)) {
+      message(paste(". running count:",rowcount)); 
+    }
     
   # when chunker is provided, set limit to chunker size and capture last value of request using csv_after flag
   } else {
     hdr <- TRUE;
-    aft <- 0;
-    
-    # Open output csv for append
-    con <- file(tmpfile,"a"); 
+    aft <- -99999999;
     
     while (!is.null(aft) && aft != '') {
-      message(paste(". requesting",chunker,"comids")); 
+      if (isTRUE(verbose)) {
+        message(paste(". requesting",chunker,"comids with after value",aft)); 
+      }
       
       req <-
         request |>
+        httr2::req_timeout(seconds = 180) |> 
         httr2::req_retry(
-           backoff = ~ 15
-          ,max_tries = 6
+           backoff          = ~ 15
+          ,max_tries        = 10
           ,retry_on_failure = TRUE
         ) |>
-        httr2::req_timeout(seconds = 60) |> 
         httr2::req_body_form(
           comid        = rb2prm(request_body,'comid')
          ,name         = rb2prm(request_body,'name')
@@ -227,7 +254,7 @@ sc_get_data25 <- function(
       ) |>
       httr2::req_headers(Accept = "text/csv");
       
-      if (isTRUE(verbose)) {
+      if (isTRUE(showrequest)) {
         req |> httr2::req_dry_run();
         
       }
@@ -262,8 +289,14 @@ sc_get_data25 <- function(
           }
           
         } else {
-          writeLines(line,con=con,sep="");
-        
+          if (is.null(colnames)) {
+            colnames <- line;
+          } else {
+            rowcount <- rowcount + 1;
+          }
+          
+          writeLines(line,con=con);
+          
         }
       
       }
@@ -271,31 +304,47 @@ sc_get_data25 <- function(
       # Make sure to close as R only provides 128 connections
       close(resp);
       
+      if (isTRUE(verbose)) {
+        message(paste(". running count:",rowcount)); 
+      }
+      
       # Remove header from further iterations
       hdr <- FALSE;
       
     }
-
-    close(con);
     
-    # Loading results back into memory under R may or may not be a bit dodgy
-    if (isTRUE(verbose)) {
-      message(". loading results into data frame");
-    }
-    df <- read.csv(tmpfile);
+  }
+  
+  # Close the CSV file
+  close(con);
+    
+  cols = utils::read.csv(text = colnames,header = FALSE);
+  if (isTRUE(verbose)) {
+    message(paste(". results have",length(cols),"columns"));
+  }
+   
+  if (isTRUE(verbose)) {
+    message(paste(". loading",rowcount,"total results into data frame"));
+  }
+  
+  # This assumes all StreamCat results are numeric doubles
+  df <- data.table::fread(
+     csvfile
+    ,colClasses = list(
+       integer64 = c(1)
+      ,numeric   = c(2:length(cols))
+     )
+  );
 
-    if (isTRUE(verbose)) {
-      message(". passing back dataframe");
-    }
-    if (exists("df") && !is.null(df)) {
-      if ("count" %in% colnames(df)) {
-        return(df$items);
+  if (isTRUE(verbose)) {
+    message(". passing back dataframe");
+  }
+  if (exists("df") && !is.null(df)) {
+    if ("count" %in% colnames(df)) {
+      return(df$items);
 
-      } else {
-        df %>% dplyr::select(comid,dplyr::everything());
-        return(df);
-
-      }
+    } else {
+      return(df);
 
     }
   

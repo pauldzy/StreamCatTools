@@ -91,7 +91,7 @@ sc_get_data2 <- function(
   }
 
   if (isTRUE(checkparms)) {
-    params <- sc_get_params(param='metric_names');
+    params <- sc_get_params2(param='metric_names');
     
     if ("name" %in% names(request_body) && request_body[["name"]][1] != "all") {
       if (!all(request_body[["name"]] %in% params)){
@@ -125,7 +125,7 @@ sc_get_data2 <- function(
   
   }
   
-  # be careful using static tempfile names if multiple requests are made similtaneously
+  # be careful using static csvfile names if multiple requests are made simultaneously
   if (file.exists(csvfile)) {
     file.remove(csvfile)
   }
@@ -135,7 +135,7 @@ sc_get_data2 <- function(
   colnames <- NULL;
   rowcount <- 0;
   
-  # when chunker is null, do a straightforward CSV extraction into a data frame
+  # when chunker is null, do a straightforward CSV download
   if (is.null(chunker)) {
     if (isTRUE(verbose)) {
       message(". executing single request"); 
